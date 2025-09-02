@@ -1,0 +1,139 @@
+# azure-pipelines-infra-linux-vm.yml
+# This pipeline is triggered by PRs to 'dev' for validation and scheduled runs for drift detection.
+# It requires manual approval to apply changes, enforcing a strong change management process.
+
+trigger:
+  branches:
+    include:
+    - feature-ci
+    - dev
+
+pr:
+  branches:
+    include:
+    - dev
+
+schedules:
+- cron: "0 0 * * *"  # Run nightly at midnight UTC to check for drift
+  displayName: "Daily Drift Detection"
+  branches:
+    include:
+    - dev
+  always: true # Always run on schedule, regardless of code changes
+
+variables:
+  - group: tf-remote-backend           # contains TFSTATE_RG/SA/CONTAINER
+  - group: kv-secrets                  # contains ssh-public-key secret
+  - name: tf_workdir
+    value: 'terraform-linux-vm'
+  - name: terraform_version
+    value: 'latest'
+  - name: azure_service_connection
+    value: 'svcconn-azure'
+
+resources:
+  repositories:
+  - repository: self
+    type: git
+    ref: 'refs/heads/main'  # Specify the default branch
+
+stages:
+- stage: Plan
+  displayName: "Terraform Plan"
+  jobs:
+  - job: run_plan
+    displayName: "Generate Terraform Plan"
+    pool: { vmImage: 'ubuntu-latest' }
+    steps:
+    - checkout: self
+
+    - task: AzureKeyVault@2
+      displayName: "Fetch SSH public key from Key Vault"
+      inputs:
+        azureSubscription: $(azure_service_connection)
+        KeyVaultName: 'kv-shared-dev'
+        SecretsFilter: 'ssh-public-key'
+
+    - task: TerraformInstaller@1
+      displayName: "Install Terraform"
+      inputs:
+        terraformVersion: $(terraform_version)
+
+    - script: |
+        cd $(tf_workdir)
+        # Ensure the SSH public key is passed correctly from Key Vault
+        export TF_VAR_ssh_public_key=$(ssh-public-key)
+        
+        # Format and validate the code
+        terraform fmt -recursive
+        terraform validate
+      displayName: "TF: Format & Validate"
+
+    - script: |
+        cd $(tf_workdir)
+        terraform init \
+          -backend-config="resource_group_name=$(TFSTATE_RG)" \
+          -backend-config="storage_account_name=$(TFSTATE_SA)" \
+          -backend-config="container_name=$(TFSTATE_CONTAINER)" \
+          -backend-config="key=linux-vm/dev.tfstate"
+
+        terraform plan -out=tfplan \
+          -var="env=dev" \
+          -var="location=South India" \
+          -var="rg_name=rg-retail-dev" \
+          -var="vnet_name=vnet-retail-dev" \
+          -var='vnet_cidr=["10.40.0.0/16"]' \
+          -var="subnet_name=snet-app" \
+          -var='subnet_cidr=["10.40.10.0/24"]' \
+          -var='allow_ssh_from_cidr=["203.0.113.25/32"]' \
+          -var="create_public_ip=false" \
+          -var="vm_name=vm-retail-app-01" \
+          -var="vm_size=Standard_DS1_v2" \
+          -var="admin_username=azureadmin"
+      displayName: "TF: Init & Plan"
+
+    - publish: $(tf_workdir)/tfplan
+      artifact: tfplan
+
+- stage: Apply
+  displayName: "Terraform Apply to Dev"
+  dependsOn: Terraform
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/dev'))
+  jobs:
+  - deployment: apply_to_dev
+    displayName: "Apply to Dev Environment"
+    environment: dev
+    pool: { vmImage: 'ubuntu-latest' }
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - checkout: self
+
+          - task: TerraformInstaller@1
+            displayName: "Install Terraform"
+            inputs:
+              terraformVersion: $(terraform_version)
+          
+          - download: current
+            artifact: tfplan
+
+          - script: |
+              cd $(tf_workdir)
+              terraform init \
+                -backend-config="resource_group_name=$(TFSTATE_RG)" \
+                -backend-config="storage_account_name=$(TFSTATE_SA)" \
+                -backend-config="container_name=$(TFSTATE_CONTAINER)" \
+                -backend-config="key=linux-vm/dev.tfstate"
+              terraform apply -auto-approve tfplan
+            displayName: "TF: Apply"
+
+#PS C:\TF-Prod> is your local path, not the pipeline's
+#Your local path PS C:\TF-Prod> exists on your personal computer, which is not where the Azure Pipeline runs. The pipeline executes on a hosted agent (like ubuntu-latest) running inside a container or a virtual machine in Azure's infrastructure.
+#The agent has its own local file system, and your local C: drive is not part of it.
+#The pipeline clones your repository into a default directory on the agent, which is usually $(Agent.BuildDirectory)/s. The cd $(tf_workdir) command in the YAML handles moving into the correct folder relative to the repository root. 
+#Conclusion: You should not hardcode your local PS C:\TF-Prod> path into the YAML file. The cd $(tf_workdir) command correctly navigates to the terraform-linux-vm directory within the cloned repository on the agent.
+ # repository: self refers to the current repository
+#When you create a pipeline and select a repository and a YAML file within it, Azure DevOps automatically knows that the pipeline's source code is in that repository.
+#repository: self is the default checkout behavior and ensures the pipeline checks out its own source code before running any steps. 
+#Conclusion: You should not change repository: self to your real repository name. It is a best practice and the standard way to refer to the repository where the pipeline definition resides. The YAML correctly references the repository without you having to know the name. 
