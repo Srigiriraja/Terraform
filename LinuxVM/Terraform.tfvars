@@ -1,7 +1,7 @@
 env = "dev"
 location = "southindia"
 Resource_group_name = "rg-retail-dev"
-tags = "need to use customised tags: owner = "platform-team", cost_center = "it", workload = "vm" "
+tags = "need to use customised tags: owner = "platform-team", cost_center = "IT", workload = "vm" "
 vnet_name = "vnet-retail-dev"
 address_space  = ["10.40.0.0/16"]
 subnet_name = "snet-app"

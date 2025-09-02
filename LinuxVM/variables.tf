@@ -13,6 +13,12 @@ variable "Resource_group_name" {
     description = "rg-retail-dev" 
 }
 
+# Tags
+variable "tags" {
+  type = map(string)
+  default = { owner = "platform-team", cost_center = "IT", workload = "vm" }
+}
+
 # Networking
 
 variable "vnet_name" {
@@ -45,7 +51,7 @@ variable "create_public_ip" {
     description = "false  # set true only if you must expose SSH directly" 
 }
 
-variable "vnet_name" {
+variable "vm_name" {
     type = string
     description = "Assigned name to our Vnet"
 }
